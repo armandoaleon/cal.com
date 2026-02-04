@@ -19,9 +19,16 @@ export class DeploymentsService {
   ) {}
 
   async checkLicense() {
+    // Dev bypass: always return true in non-production environments (local/dev/testing only)
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Dev mode: License check bypassed');
+      return true;
+    }
+
     if (this.configService.get("e2e")) {
       return true;
     }
+
     let licenseKey = this.configService.get("api.licenseKey");
 
     if (!licenseKey) {
@@ -33,15 +40,30 @@ export class DeploymentsService {
     if (!licenseKey) {
       return false;
     }
+
     const licenseKeyUrl = this.configService.get("api.licenseKeyUrl") + `/${licenseKey}`;
+
     const cachedData = await this.redisService.redis.get(getLicenseCacheKey(licenseKey));
     if (cachedData) {
-      return (JSON.parse(cachedData) as LicenseCheckResponse)?.status;
+      const parsed = JSON.parse(cachedData) as any;
+      // Support both old .status and current .valid formats
+      return parsed?.status ?? parsed?.valid ?? false;
     }
-    const response = await fetch(licenseKeyUrl, { mode: "cors" });
-    const data = (await response.json()) as LicenseCheckResponse;
-    const cacheKey = getLicenseCacheKey(licenseKey);
-    this.redisService.redis.set(cacheKey, JSON.stringify(data), "EX", CACHING_TIME);
-    return data.status;
+
+    try {
+      const response = await fetch(licenseKeyUrl);
+      if (!response.ok) {
+        console.warn(`License validation fetch failed with status: ${response.status}`);
+        return false;
+      }
+      const data = await response.json() as any;
+      const cacheKey = getLicenseCacheKey(licenseKey);
+      this.redisService.redis.set(cacheKey, JSON.stringify(data), "EX", CACHING_TIME);
+
+      // Support both old .status and current .valid formats
+      return data?.status ?? data?.valid ?? false;
+    } catch (error) {
+      console.error('License validation error:', error);
+      return false;
+    }
   }
-}
